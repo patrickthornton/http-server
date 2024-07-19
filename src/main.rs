@@ -44,6 +44,7 @@ struct Response {
 enum Endpoint {
     Index,
     Echo(String),
+    UserAgent,
     NotFound,
 }
 
@@ -85,6 +86,35 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
             ],
             body,
         },
+        Endpoint::UserAgent => {
+            let user_agent_header = request
+                .headers
+                .iter()
+                .find(|header| header.key == "User-Agent");
+            let user_agent = match user_agent_header {
+                None => "".to_owned(),
+                Some(header) => header.value.to_owned(),
+            };
+
+            Response {
+                status_line: StatusLine {
+                    version: "HTTP/1.1".to_owned(),
+                    status_code: 200,
+                    status_text: "OK".to_owned(),
+                },
+                headers: vec![
+                    Header {
+                        key: "Content-Type".to_owned(),
+                        value: "text/plain".to_owned(),
+                    },
+                    Header {
+                        key: "Content-Length".to_owned(),
+                        value: user_agent.len().to_string(),
+                    },
+                ],
+                body: user_agent,
+            }
+        }
         Endpoint::NotFound => Response {
             status_line: StatusLine {
                 version: "HTTP/1.1".to_owned(),
@@ -139,6 +169,7 @@ fn parse_target(target: String) -> Endpoint {
             None => return Endpoint::NotFound,
             Some(string) => return Endpoint::Echo(string.to_owned()),
         },
+        "user-agent" => return Endpoint::UserAgent,
         _ => return Endpoint::NotFound,
     }
 }
