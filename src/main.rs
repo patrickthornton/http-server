@@ -1,18 +1,26 @@
 use anyhow::{anyhow, Context, Result};
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::{
+    io::{Read, Write},
+    net::TcpListener,
+    str::from_utf8,
+};
 
+const MAX_REQUEST_SIZE: usize = 1024 * 1024; // 1 MB
+
+#[allow(dead_code)]
 struct RequestLine {
     method: String,
     target: String,
     version: String,
 }
 
+#[allow(dead_code)]
 struct Header {
     key: String,
     value: String,
 }
 
+#[allow(dead_code)]
 struct Request {
     request_line: RequestLine,
     headers: Vec<Header>,
@@ -25,12 +33,11 @@ fn main() -> Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                let mut request_string = String::new();
-                stream
-                    .read_to_string(&mut request_string)
+                let mut buf = [0; MAX_REQUEST_SIZE];
+                let bytes_read = stream
+                    .read(&mut buf)
                     .context("couldn't read from TCP stream")?;
-
-                dbg!(&request_string);
+                let request_string = from_utf8(&buf[..bytes_read])?;
 
                 let request =
                     parse_request(request_string).context("couldn't parse HTTP request")?;
@@ -53,7 +60,7 @@ fn main() -> Result<()> {
 }
 
 // returns Error on a bad parse
-fn parse_request(request: String) -> Result<Request> {
+fn parse_request(request: &str) -> Result<Request> {
     // split into request line and headers at CRLF
     let (request_line, headers_and_body) = request
         .split_once("\r\n")
