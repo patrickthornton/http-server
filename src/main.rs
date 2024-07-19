@@ -1,8 +1,10 @@
 use anyhow::{anyhow, Context, Result};
-use std::str::from_utf8;
+use std::{env::args, str::from_utf8};
 use tokio::{
+    fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    spawn,
 };
 
 const MAX_REQUEST_SIZE: usize = 1024 * 32; // 32 KB
@@ -45,6 +47,7 @@ enum Endpoint {
     Index,
     Echo(String),
     UserAgent,
+    File(String),
     NotFound,
 }
 
@@ -69,24 +72,7 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
             headers: Vec::new(),
             body: String::new(),
         },
-        Endpoint::Echo(body) => Response {
-            status_line: StatusLine {
-                version: "HTTP/1.1".to_owned(),
-                status_code: 200,
-                status_text: "OK".to_owned(),
-            },
-            headers: vec![
-                Header {
-                    key: "Content-Type".to_owned(),
-                    value: "text/plain".to_owned(),
-                },
-                Header {
-                    key: "Content-Length".to_owned(),
-                    value: body.len().to_string(),
-                },
-            ],
-            body,
-        },
+        Endpoint::Echo(body) => respond("text/plain", body),
         Endpoint::UserAgent => {
             let user_agent_header = request
                 .headers
@@ -96,35 +82,29 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
                 None => "".to_owned(),
                 Some(header) => header.value.to_owned(),
             };
-
-            Response {
-                status_line: StatusLine {
-                    version: "HTTP/1.1".to_owned(),
-                    status_code: 200,
-                    status_text: "OK".to_owned(),
+            respond("text/plain", user_agent)
+        }
+        Endpoint::File(path) => {
+            let args: Vec<String> = args().collect();
+            let directory = match args.iter().position(|arg| arg == "--directory") {
+                None => "/",
+                Some(i) => match args.get(i + 1) {
+                    None => "/",
+                    Some(arg) => arg,
                 },
-                headers: vec![
-                    Header {
-                        key: "Content-Type".to_owned(),
-                        value: "text/plain".to_owned(),
-                    },
-                    Header {
-                        key: "Content-Length".to_owned(),
-                        value: user_agent.len().to_string(),
-                    },
-                ],
-                body: user_agent,
+            };
+            let file_path = directory.to_owned() + path.as_str();
+            let file_result = File::open(file_path).await;
+
+            if let Ok(mut file) = file_result {
+                let mut contents = String::new();
+                file.read_to_string(&mut contents).await?;
+                respond("application/octet-stream", contents)
+            } else {
+                not_found()
             }
         }
-        Endpoint::NotFound => Response {
-            status_line: StatusLine {
-                version: "HTTP/1.1".to_owned(),
-                status_code: 404,
-                status_text: "Not Found".to_owned(),
-            },
-            headers: Vec::new(),
-            body: String::new(),
-        },
+        Endpoint::NotFound => not_found(),
     };
 
     let response_str = parse_response_to_str(response);
@@ -141,7 +121,7 @@ async fn main() -> Result<()> {
     loop {
         let (socket, _) = listener.accept().await?;
 
-        tokio::spawn(async move { handle_client(socket).await });
+        spawn(async move { handle_client(socket).await });
     }
 }
 
@@ -168,6 +148,10 @@ fn parse_target(target: String) -> Endpoint {
             Some(string) => return Endpoint::Echo(string.to_owned()),
         },
         "user-agent" => return Endpoint::UserAgent,
+        "files" => match components.next() {
+            None => return Endpoint::NotFound,
+            Some(string) => return Endpoint::File(string.to_owned()),
+        },
         _ => return Endpoint::NotFound,
     }
 }
@@ -239,4 +223,37 @@ fn parse_response_to_str(response: Response) -> String {
     parsed_response += response.body.as_str();
 
     parsed_response
+}
+
+fn respond(content_type: &str, contents: String) -> Response {
+    Response {
+        status_line: StatusLine {
+            version: "HTTP/1.1".to_owned(),
+            status_code: 200,
+            status_text: "OK".to_owned(),
+        },
+        headers: vec![
+            Header {
+                key: "Content-Type".to_owned(),
+                value: content_type.to_owned(),
+            },
+            Header {
+                key: "Content-Length".to_owned(),
+                value: contents.len().to_string(),
+            },
+        ],
+        body: contents,
+    }
+}
+
+fn not_found() -> Response {
+    Response {
+        status_line: StatusLine {
+            version: "HTTP/1.1".to_owned(),
+            status_code: 404,
+            status_text: "Not Found".to_owned(),
+        },
+        headers: Vec::new(),
+        body: String::new(),
+    }
 }
