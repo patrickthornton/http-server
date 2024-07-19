@@ -63,16 +63,8 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
 
     let endpoint = parse_target(request.request_line.target);
     let response = match endpoint {
-        Endpoint::Index => Response {
-            status_line: StatusLine {
-                version: "HTTP/1.1".to_owned(),
-                status_code: 200,
-                status_text: "OK".to_owned(),
-            },
-            headers: Vec::new(),
-            body: String::new(),
-        },
-        Endpoint::Echo(body) => respond("text/plain", body),
+        Endpoint::Index => respond(200, "OK"),
+        Endpoint::Echo(body) => respond_with_body("text/plain", body),
         Endpoint::UserAgent => {
             let user_agent_header = request
                 .headers
@@ -82,7 +74,7 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
                 None => "".to_owned(),
                 Some(header) => header.value.to_owned(),
             };
-            respond("text/plain", user_agent)
+            respond_with_body("text/plain", user_agent)
         }
         Endpoint::File(path) => {
             let args: Vec<String> = args().collect();
@@ -94,12 +86,20 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
                 },
             };
             let file_path = directory.to_owned() + path.as_str();
-            let file_result = File::open(file_path).await;
 
-            if let Ok(mut file) = file_result {
-                let mut contents = String::new();
-                file.read_to_string(&mut contents).await?;
-                respond("application/octet-stream", contents)
+            if request.request_line.method == "GET" {
+                let file_result = File::open(file_path).await;
+                if let Ok(mut file) = file_result {
+                    let mut contents = String::new();
+                    file.read_to_string(&mut contents).await?;
+                    respond_with_body("application/octet-stream", contents)
+                } else {
+                    not_found()
+                }
+            } else if request.request_line.method == "POST" {
+                let mut file = File::create(file_path).await?;
+                file.write_all(request.body.as_bytes()).await?;
+                respond(201, "Created")
             } else {
                 not_found()
             }
@@ -108,9 +108,7 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
     };
 
     let response_str = parse_response_to_str(response);
-
     stream.write_all(response_str.as_bytes()).await?;
-    println!("accepted new connection");
     Ok(())
 }
 
@@ -225,7 +223,19 @@ fn parse_response_to_str(response: Response) -> String {
     parsed_response
 }
 
-fn respond(content_type: &str, contents: String) -> Response {
+fn respond(status_code: i32, status_text: &str) -> Response {
+    Response {
+        status_line: StatusLine {
+            version: "HTTP/1.1".to_owned(),
+            status_code: status_code,
+            status_text: status_text.to_owned(),
+        },
+        headers: Vec::new(),
+        body: String::new(),
+    }
+}
+
+fn respond_with_body(content_type: &str, contents: String) -> Response {
     Response {
         status_line: StatusLine {
             version: "HTTP/1.1".to_owned(),
