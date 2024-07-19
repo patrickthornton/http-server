@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Context, Result};
-use std::{
-    io::{Read, Write},
+use std::str::from_utf8;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    str::from_utf8,
 };
 
-const MAX_REQUEST_SIZE: usize = 1024 * 1024; // 1 MB
+const MAX_REQUEST_SIZE: usize = 1024 * 32; // 32 KB
 
 #[allow(dead_code)]
 struct RequestLine {
@@ -48,10 +48,11 @@ enum Endpoint {
     NotFound,
 }
 
-fn handle_client(mut stream: TcpStream) -> Result<()> {
+async fn handle_client(mut stream: TcpStream) -> Result<()> {
     let mut buf = [0; MAX_REQUEST_SIZE];
     let bytes_read = stream
         .read(&mut buf)
+        .await
         .context("couldn't read from TCP stream")?;
     let request_string = from_utf8(&buf[..bytes_read])?;
 
@@ -128,23 +129,20 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
 
     let response_str = parse_response_to_str(response);
 
-    stream.write_all(response_str.as_bytes())?;
+    stream.write_all(response_str.as_bytes()).await?;
     println!("accepted new connection");
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:4221")?;
+#[tokio::main]
+async fn main() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:4221").await?;
 
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => handle_client(stream)?,
-            Err(e) => {
-                println!("error: {}", e);
-            }
-        }
+    loop {
+        let (socket, _) = listener.accept().await?;
+
+        tokio::spawn(async move { handle_client(socket).await });
     }
-    Ok(())
 }
 
 fn parse_target(target: String) -> Endpoint {
