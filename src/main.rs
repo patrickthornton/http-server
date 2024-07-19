@@ -9,6 +9,7 @@ use tokio::{
 
 const MAX_REQUEST_SIZE: usize = 1024 * 32; // 32 KB
 
+// structures for HTTP requests and responses
 #[allow(dead_code)]
 struct RequestLine {
     method: String,
@@ -43,6 +44,7 @@ struct Response {
     body: String,
 }
 
+// enumeration of possible endpoints on the server
 enum Endpoint {
     Index,
     Echo(String),
@@ -51,13 +53,14 @@ enum Endpoint {
     NotFound,
 }
 
-async fn handle_client(mut stream: TcpStream) -> Result<()> {
+// processes a single request from the TCP stream asynchronously
+async fn process_request(mut stream: TcpStream) -> Result<()> {
     let mut buf = [0; MAX_REQUEST_SIZE];
     let bytes_read = stream
         .read(&mut buf)
         .await
         .context("couldn't read from TCP stream")?;
-    let request_string = from_utf8(&buf[..bytes_read])?;
+    let request_string = from_utf8(&buf[..bytes_read]).context("stream not in valid UTF-8")?;
 
     let request = parse_str_to_request(request_string).context("couldn't parse HTTP request")?;
 
@@ -91,14 +94,20 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
                 let file_result = File::open(file_path).await;
                 if let Ok(mut file) = file_result {
                     let mut contents = String::new();
-                    file.read_to_string(&mut contents).await?;
+                    file.read_to_string(&mut contents)
+                        .await
+                        .context("couldn't read from file")?;
                     respond_with_body("application/octet-stream", contents)
                 } else {
                     not_found()
                 }
             } else if request.request_line.method == "POST" {
-                let mut file = File::create(file_path).await?;
-                file.write_all(request.body.as_bytes()).await?;
+                let mut file = File::create(file_path)
+                    .await
+                    .context("couldn't create new file")?;
+                file.write_all(request.body.as_bytes())
+                    .await
+                    .context("couldn't write to file")?;
                 respond(201, "Created")
             } else {
                 not_found()
@@ -108,23 +117,31 @@ async fn handle_client(mut stream: TcpStream) -> Result<()> {
     };
 
     let response_str = parse_response_to_str(response);
-    stream.write_all(response_str.as_bytes()).await?;
+    stream
+        .write_all(response_str.as_bytes())
+        .await
+        .context("couldn't write to TCP stream")?;
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:4221").await?;
+    let listener = TcpListener::bind("127.0.0.1:4221")
+        .await
+        .context("couldn't bind to 127.0.0.1:4221")?;
 
     loop {
-        let (socket, _) = listener.accept().await?;
+        let (socket, _) = listener
+            .accept()
+            .await
+            .context("couldn't accept new TCP socket")?;
 
-        spawn(async move { handle_client(socket).await });
+        spawn(async move { process_request(socket).await });
     }
 }
 
 fn parse_target(target: String) -> Endpoint {
-    let mut components = target.split("/");
+    let mut components = target.split('/');
     match components.next() {
         None => return Endpoint::NotFound,
         Some(string) => {
@@ -140,17 +157,17 @@ fn parse_target(target: String) -> Endpoint {
     };
 
     match route {
-        "" => return Endpoint::Index,
+        "" => Endpoint::Index,
         "echo" => match components.next() {
-            None => return Endpoint::NotFound,
-            Some(string) => return Endpoint::Echo(string.to_owned()),
+            None => Endpoint::NotFound,
+            Some(string) => Endpoint::Echo(string.to_owned()),
         },
-        "user-agent" => return Endpoint::UserAgent,
+        "user-agent" => Endpoint::UserAgent,
         "files" => match components.next() {
-            None => return Endpoint::NotFound,
-            Some(string) => return Endpoint::File(string.to_owned()),
+            None => Endpoint::NotFound,
+            Some(string) => Endpoint::File(string.to_owned()),
         },
-        _ => return Endpoint::NotFound,
+        _ => Endpoint::NotFound,
     }
 }
 
@@ -161,7 +178,7 @@ fn parse_str_to_request(request: &str) -> Result<Request> {
         .context("couldn't find first CRLF")?;
 
     // parse request line
-    let request_line_components: Vec<&str> = request_line.split(" ").collect();
+    let request_line_components: Vec<&str> = request_line.split(' ').collect();
     if request_line_components.len() < 3 {
         return Err(anyhow!("not enough components in request line"));
     }
@@ -223,11 +240,12 @@ fn parse_response_to_str(response: Response) -> String {
     parsed_response
 }
 
+// for responses with no headers or body
 fn respond(status_code: i32, status_text: &str) -> Response {
     Response {
         status_line: StatusLine {
             version: "HTTP/1.1".to_owned(),
-            status_code: status_code,
+            status_code,
             status_text: status_text.to_owned(),
         },
         headers: Vec::new(),
@@ -235,6 +253,7 @@ fn respond(status_code: i32, status_text: &str) -> Response {
     }
 }
 
+// for simple 200 responses with a body
 fn respond_with_body(content_type: &str, contents: String) -> Response {
     Response {
         status_line: StatusLine {
@@ -256,6 +275,7 @@ fn respond_with_body(content_type: &str, contents: String) -> Response {
     }
 }
 
+// for 404 responses
 fn not_found() -> Response {
     Response {
         status_line: StatusLine {
